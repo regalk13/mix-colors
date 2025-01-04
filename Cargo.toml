@@ -15,3 +15,4 @@ opt-level = 3
 bevy = { version = "0.15" }
 bevy_egui = "0.31"
 wgpu-types = "23.0.0"
+mixbox = "2.0.0"
