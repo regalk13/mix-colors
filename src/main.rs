@@ -1,218 +1,234 @@
-use bevy::prelude::*;
-use bevy_egui::{egui, EguiContexts, EguiPlugin};
-use mixbox;
-use std::collections::VecDeque;
 
-mod pigment;
+use nannou::prelude::*;
+use nannou_egui::{self, egui, Egui};
 
-use pigment::*;
 
-#[derive(Resource)]
-struct PaintCanvas {
-    strokes: VecDeque<Stroke>,
-    current_stroke: Stroke,
+struct Model {
+    strokes: Vec<Stroke>, 
+    current_stroke: Stroke, 
+    egui: Egui,          
+    settings: Settings,    
+    ui_wants_input: bool,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug)]
 struct Stroke {
-    points: Vec<egui::Pos2>,
-    color: egui::Color32,
-    stroke_width: f32,
+    points: Vec<Point2>,
+    color: Srgb<u8>,
+    width: f32,
 }
 
-impl Default for PaintCanvas {
-    fn default() -> Self {
-        Self {
-            strokes: VecDeque::new(),
-            current_stroke: Stroke {
-                points: Vec::new(),
-                color: BLACK.color,
-                stroke_width: 10.0,
-            },
-        }
-    }
+struct Settings {
+    stroke_width: f32,
+    stroke_color: Srgb<u8>,
+    clear_canvas: bool,
+}
+
+pub struct PaintColor {
+    pub name: &'static str,
+    pub color: Srgb<u8>,
+}
+
+pub fn create_paint_colors() -> Vec<PaintColor> {
+    vec![
+        PaintColor {
+            name: "Cadmium Yellow",
+            color: srgb(254, 236, 0),
+        },
+        PaintColor {
+            name: "Hansa Yellow",
+            color: srgb(252, 211, 0),
+        },
+        PaintColor {
+            name: "Cadmium Orange",
+            color: srgb(255, 105, 0),
+        },
+        PaintColor {
+            name: "Cadmium Red",
+            color: srgb(255, 39, 2),
+        },
+        PaintColor {
+            name: "Quinacridone Magenta",
+            color: srgb(128, 2, 46),
+        },
+        PaintColor {
+            name: "Cobalt Violet",
+            color: srgb(78, 0, 66),
+        },
+        PaintColor {
+            name: "Ultramarine Blue",
+            color: srgb(25, 0, 89),
+        },
+        PaintColor {
+            name: "Cobalt Blue",
+            color: srgb(0, 33, 133),
+        },
+        PaintColor {
+            name: "Phthalo Blue",
+            color: srgb(13, 27, 68),
+        },
+        PaintColor {
+            name: "Phthalo Green",
+            color: srgb(0, 60, 50),
+        },
+        PaintColor {
+            name: "Permanent Green",
+            color: srgb(7, 109, 22),
+        },
+        PaintColor {
+            name: "Sap Green",
+            color: srgb(107, 148, 4),
+        },
+        PaintColor {
+            name: "Burnt Sienna",
+            color: srgb(123, 72, 0),
+        },
+        PaintColor {
+            name: "Black",
+            color: srgb(0, 0, 0),
+        },
+    ]
 }
 
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins)
-        .add_plugins(EguiPlugin)
-        .init_resource::<PaintCanvas>()
-        .add_systems(Update, paint_system)
-        .run();
+    nannou::app(model).update(update).run();
 }
 
-fn paint_system(mut contexts: EguiContexts, mut canvas: ResMut<PaintCanvas>) {
-    egui::SidePanel::new(egui::panel::Side::Left, "SidePanel").show(contexts.ctx_mut(), |ui| {
-        ui.vertical(|ui| {
-            // ui.color_edit_button_srgba(&mut canvas.current_stroke.color);
+fn model(app: &App) -> Model {
+    let window_id = app
+        .new_window()
+        .view(view)
+        .mouse_pressed(mouse_pressed)
+        .mouse_released(mouse_released)
+        .mouse_moved(mouse_moved)
+        .raw_event(raw_window_event)
+        .build()
+        .unwrap();
+    let window = app.window(window_id).unwrap();
 
-            // Aviable Pigment Colors according to mixcolor
+    let egui = Egui::from_window(&window);
 
-            // Aviable Pigment Colors according to mixcolor
-            let colors = [
-                CADMIUM_YELLOW,
-                HANSA_YELLOW,
-                CADMIUM_ORANGE,
-                CADMIUM_RED,
-                QUINACRIDONE_MAGENTA,
-                COBALT_VIOLET,
-                ULTRAMARINE_BLUE,
-                COBALT_BLUE,
-                PHTHALO_BLUE,
-                PHTHALO_GREEN,
-                PERMANENT_GREEN,
-                SAP_GREEN,
-                BURNT_SIENNA,
-                BLACK
-            ];
-            for paint in colors {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(paint.name).color(egui::Color32::WHITE))
-                );
-                let button = ui.add(
-                    egui::Button::new("")
-                        .fill(paint.color)
-                        .min_size(egui::Vec2::new(300.0, 20.0)),
-                );
-                if button.clicked() {
-                    canvas.current_stroke.color = paint.color;
-                }
-            }
+    Model {
+        strokes: Vec::new(),
+        current_stroke: Stroke {
+            points: Vec::new(),
+            color: srgb(0, 0, 0),
+            width: 5.0,
+        },
+        egui,
+        settings: Settings {
+            stroke_width: 5.0,
+            stroke_color: srgb(0, 0, 0),
+            clear_canvas: false,
+        },
+        ui_wants_input: false, 
+    }
+}
 
-            ui.add(
-                egui::Slider::new(&mut canvas.current_stroke.stroke_width, 1.0..=20.0)
-                    .text("Stroke width"),
+fn update(app: &App, model: &mut Model, update: Update) {
+    let egui = &mut model.egui;
+    let settings = &mut model.settings;
+
+    egui.set_elapsed_time(update.since_start);
+    let ctx = egui.begin_frame();
+
+    model.ui_wants_input = ctx.wants_pointer_input();
+    egui::SidePanel::new(egui::panel::Side::Left, "SidePanel").show(&ctx, |ui| {
+        ui.label("Stroke Width:");
+        ui.add(egui::Slider::new(&mut settings.stroke_width, 1.0..=20.0));
+
+        ui.label("Stroke Color:");
+        let mut color = [
+            settings.stroke_color.red as f32 / 255.0,
+            settings.stroke_color.green as f32 / 255.0,
+            settings.stroke_color.blue as f32 / 255.0,
+        ];
+        
+        if ui.color_edit_button_rgb(&mut color).changed() {
+            settings.stroke_color = srgb(
+                (color[0] * 255.0) as u8,
+                (color[1] * 255.0) as u8,
+                (color[2] * 255.0) as u8,
             );
+        }
 
-            if ui.button("Clear").clicked() {
-                canvas.strokes.clear();
-                canvas.current_stroke.points.clear();
+        let colors = create_paint_colors();
+        for paint in colors {
+            ui.add(
+                egui::Label::new(egui::RichText::new(paint.name).color(egui::Color32::WHITE))
+            );
+            let button = ui.add(
+                egui::Button::new("")
+                    .min_size(egui::Vec2::new(300.0, 20.0)),
+            );
+            if button.clicked() {
+                settings.stroke_color = paint.color;
             }
+        }
 
-            if ui.button("Undo").clicked() && !canvas.strokes.is_empty() {
-                canvas.strokes.pop_back();
-            }
-        });
+
+        if ui.button("Clear Canvas").clicked() {
+            settings.clear_canvas = true;
+        }
     });
-    egui::CentralPanel::default().show(contexts.ctx_mut(), |ui| {
-        let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::drag());
-        let rect = response.rect;
 
-        // Background
-        painter.rect_filled(rect, 0.0, egui::Color32::WHITE);
-
-        if response.dragged() {
-            if let Some(pointer_pos) = response.interact_pointer_pos() {
-                canvas.current_stroke.points.push(pointer_pos);
-            }
-        } else if response.drag_stopped() {
-            if !canvas.current_stroke.points.is_empty() {
-                let finished_stroke = std::mem::take(&mut canvas.current_stroke);
-                canvas.strokes.push_back(finished_stroke);
-                canvas.current_stroke.points.clear();
-            }
-        }
-
-        // Render strokes
-        for stroke in &canvas.strokes {
-            render_stroke(&painter, stroke);
-        }
-
-        render_stroke(&painter, &canvas.current_stroke);
-    });
-}
-
-fn render_stroke(painter: &egui::Painter, stroke: &Stroke) {
-    if stroke.points.len() < 2 {
-        return;
-    }
-
-    // Interpolate points for smoothness
-    let interpolated_points = interpolate_points(&stroke.points, 2.0);
-
-    for window in interpolated_points.windows(2) {
-        let (start, end) = (window[0], window[1]);
-
-        // Brush effect: Apply gradient and variable width
-        let stroke_width = stroke.stroke_width;
-        let gradient_color = stroke.color.linear_multiply(0.8); // Slightly transparent
-        painter.add(egui::Shape::line_segment(
-            [start, end],
-            egui::Stroke::new(stroke_width, gradient_color),
-        ));
+    if settings.clear_canvas {
+        model.strokes.clear();
+        settings.clear_canvas = false;
     }
 }
 
-fn interpolate_points(points: &[egui::Pos2], step: f32) -> Vec<egui::Pos2> {
-    let mut interpolated = vec![points[0]];
-    for i in 0..points.len() - 1 {
-        let start = points[i];
-        let end = points[i + 1];
-        let distance = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
-        let steps = (distance / step).ceil() as usize;
+fn view(app: &App, model: &Model, frame: Frame) {    
+    let draw = app.draw();
 
-        for t in 1..=steps {
-            let factor = t as f32 / steps as f32;
-            interpolated.push(egui::Pos2::lerp(&start, end, factor));
-        }
-    }
-    interpolated
-}
+    draw.background().color(WHITE);
 
-fn mix_color_for_segment(
-    segment: (egui::Pos2, egui::Pos2),
-    base_color: egui::Color32,
-    strokes: &VecDeque<Stroke>,
-) -> egui::Color32 {
-    // Start with the base color's RGBA values normalized to [0, 1]
-    let mut blended_color = [
-        base_color.r() as f32 / 255.0,
-        base_color.g() as f32 / 255.0,
-        base_color.b() as f32 / 255.0,
-        base_color.a() as f32 / 255.0,
-    ];
-    let mut total_opacity = blended_color[3]; // Start with the base color's opacity
-
-    for stroke in strokes {
-        if stroke.points.len() < 2 {
-            continue;
-        }
-
-        for other_segment in stroke.points.windows(2) {
-            let other_segment = (other_segment[0], other_segment[1]);
-            if segments_overlap(segment, other_segment) {
-                let other_color = stroke.color;
-                let other_opacity = other_color.a() as f32 / 255.0;
-
-                // Blend based on opacity
-                for i in 0..3 {
-                    blended_color[i] = (blended_color[i] * total_opacity
-                        + (other_color[i] as f32 / 255.0) * other_opacity)
-                        / (total_opacity + other_opacity);
-                }
-                total_opacity += other_opacity; // Accumulate opacity
-            }
+    for stroke in &model.strokes {
+        if stroke.points.len() > 1 {
+            draw.polyline()
+                .weight(stroke.width) 
+                .color(stroke.color)  
+                .points(stroke.points.iter().cloned());
         }
     }
 
-    // Convert back to egui::Color32
-    egui::Color32::from_rgba_unmultiplied(
-        (blended_color[0] * 255.0) as u8,
-        (blended_color[1] * 255.0) as u8,
-        (blended_color[2] * 255.0) as u8,
-        (total_opacity * 255.0).min(255.0) as u8,
-    )
+    if model.current_stroke.points.len() > 1 {
+        draw.polyline()
+            .weight(model.current_stroke.width)
+            .color(model.current_stroke.color)
+            .points(model.current_stroke.points.iter().cloned());
+    }
+
+    draw.to_frame(app, &frame).unwrap();
+
+    model.egui.draw_to_frame(&frame).unwrap();
 }
 
+fn mouse_pressed(_app: &App, model: &mut Model, _button: MouseButton) {
+    if !model.ui_wants_input {
+        model.current_stroke = Stroke {
+            points: Vec::new(),
+            color: model.settings.stroke_color,
+            width: model.settings.stroke_width,
+        };
+    }
+}
 
-fn segments_overlap(seg1: (egui::Pos2, egui::Pos2), seg2: (egui::Pos2, egui::Pos2)) -> bool {
-    let distance =
-        |a: egui::Pos2, b: egui::Pos2| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+fn mouse_released(_app: &App, model: &mut Model, _button: MouseButton) {
+    if !model.ui_wants_input {
+        if !model.current_stroke.points.is_empty() {
+            model.strokes.push(model.current_stroke.clone());
+        }
+        model.current_stroke.points.clear();
+    }
+}
 
-    let threshold = 5.0;
-    distance(seg1.0, seg2.0) < threshold
-        || distance(seg1.0, seg2.1) < threshold
-        || distance(seg1.1, seg2.0) < threshold
-        || distance(seg1.1, seg2.1) < threshold
+fn mouse_moved(app: &App, model: &mut Model, pos: Point2) {
+    if !model.ui_wants_input && app.mouse.buttons.left().is_down() {
+        model.current_stroke.points.push(pos);
+    }
+}
+
+fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event::WindowEvent) {
+    model.egui.handle_raw_event(event);
 }

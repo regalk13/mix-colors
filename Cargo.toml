@@ -12,7 +12,5 @@ opt-level = 1
 opt-level = 3
 
 [dependencies]
-bevy = { version = "0.15" }
-bevy_egui = "0.31"
-wgpu-types = "23.0.0"
-mixbox = "2.0.0"
+nannou = "0.19.0"
+nannou_egui = "0.19.0"
