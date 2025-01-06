@@ -95,50 +95,69 @@ fn paint_system(mut contexts: EguiContexts, mut canvas: ResMut<PaintCanvas>) {
             }
         });
     });
+    egui::CentralPanel::default().show(contexts.ctx_mut(), |ui| {
+        let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::drag());
+        let rect = response.rect;
 
-    egui::Window::new("Paint Canvas")
-        .default_size(egui::vec2(800.0, 600.0))
-        .show(contexts.ctx_mut(), |ui| {
-            let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::drag());
-            let rect = response.rect;
+        // Background
+        painter.rect_filled(rect, 0.0, egui::Color32::WHITE);
 
-            painter.rect_filled(rect, 0.0, egui::Color32::WHITE);
-
-            if response.dragged() {
-                if let Some(pointer_pos) = response.interact_pointer_pos() {
-                    canvas.current_stroke.points.push(pointer_pos);
-                }
-            } else if response.drag_stopped() {
-                if !canvas.current_stroke.points.is_empty() {
-                    let finished_stroke = std::mem::take(&mut canvas.current_stroke);
-                    canvas.strokes.push_back(finished_stroke);
-                    canvas.current_stroke.points.clear();
-                }
+        if response.dragged() {
+            if let Some(pointer_pos) = response.interact_pointer_pos() {
+                canvas.current_stroke.points.push(pointer_pos);
             }
-
-            for stroke in &canvas.strokes {
-                render_stroke(&painter, stroke, &canvas.strokes);
+        } else if response.drag_stopped() {
+            if !canvas.current_stroke.points.is_empty() {
+                let finished_stroke = std::mem::take(&mut canvas.current_stroke);
+                canvas.strokes.push_back(finished_stroke);
+                canvas.current_stroke.points.clear();
             }
+        }
 
-            render_stroke(&painter, &canvas.current_stroke, &canvas.strokes);
-        });
+        // Render strokes
+        for stroke in &canvas.strokes {
+            render_stroke(&painter, stroke);
+        }
+
+        render_stroke(&painter, &canvas.current_stroke);
+    });
 }
 
-fn render_stroke(painter: &egui::Painter, stroke: &Stroke, all_strokes: &VecDeque<Stroke>) {
+fn render_stroke(painter: &egui::Painter, stroke: &Stroke) {
     if stroke.points.len() < 2 {
         return;
     }
 
-    for window in stroke.points.windows(2) {
-        let segment = (window[0], window[1]);
+    // Interpolate points for smoothness
+    let interpolated_points = interpolate_points(&stroke.points, 2.0);
 
-        let mixed_color = mix_color_for_segment(segment, stroke.color, all_strokes);
-        println!("mixed color: {:?}", mixed_color);
+    for window in interpolated_points.windows(2) {
+        let (start, end) = (window[0], window[1]);
+
+        // Brush effect: Apply gradient and variable width
+        let stroke_width = stroke.stroke_width;
+        let gradient_color = stroke.color.linear_multiply(0.8); // Slightly transparent
         painter.add(egui::Shape::line_segment(
-            [segment.0, segment.1],
-            egui::Stroke::new(stroke.stroke_width, mixed_color),
+            [start, end],
+            egui::Stroke::new(stroke_width, gradient_color),
         ));
     }
+}
+
+fn interpolate_points(points: &[egui::Pos2], step: f32) -> Vec<egui::Pos2> {
+    let mut interpolated = vec![points[0]];
+    for i in 0..points.len() - 1 {
+        let start = points[i];
+        let end = points[i + 1];
+        let distance = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
+        let steps = (distance / step).ceil() as usize;
+
+        for t in 1..=steps {
+            let factor = t as f32 / steps as f32;
+            interpolated.push(egui::Pos2::lerp(&start, end, factor));
+        }
+    }
+    interpolated
 }
 
 fn mix_color_for_segment(
@@ -146,11 +165,14 @@ fn mix_color_for_segment(
     base_color: egui::Color32,
     strokes: &VecDeque<Stroke>,
 ) -> egui::Color32 {
-    let mut mixed_rgb = [
+    // Start with the base color's RGBA values normalized to [0, 1]
+    let mut blended_color = [
         base_color.r() as f32 / 255.0,
         base_color.g() as f32 / 255.0,
         base_color.b() as f32 / 255.0,
+        base_color.a() as f32 / 255.0,
     ];
+    let mut total_opacity = blended_color[3]; // Start with the base color's opacity
 
     for stroke in strokes {
         if stroke.points.len() < 2 {
@@ -160,42 +182,29 @@ fn mix_color_for_segment(
         for other_segment in stroke.points.windows(2) {
             let other_segment = (other_segment[0], other_segment[1]);
             if segments_overlap(segment, other_segment) {
-                let mixed_rgb_u8 = [
-                    (mixed_rgb[0] * 255.0) as u8,
-                    (mixed_rgb[1] * 255.0) as u8,
-                    (mixed_rgb[2] * 255.0) as u8,
-                ];
+                let other_color = stroke.color;
+                let other_opacity = other_color.a() as f32 / 255.0;
 
-                let other_rgb = [stroke.color.r(), stroke.color.g(), stroke.color.b()];
-
-                let latent_base = mixbox::rgb_to_latent(&mixed_rgb_u8);
-                let latent_other = mixbox::rgb_to_latent(&other_rgb);
-
-                let overlap_weight = 0.2; // Adjust this value for desired softness (0 - 1)
-                let base_weight = 1.0 - overlap_weight;
-
-                let mut latent_mix = [0.0; mixbox::LATENT_SIZE];
-                for i in 0..mixbox::LATENT_SIZE {
-                    latent_mix[i] = base_weight * latent_base[i] + overlap_weight * latent_other[i];
+                // Blend based on opacity
+                for i in 0..3 {
+                    blended_color[i] = (blended_color[i] * total_opacity
+                        + (other_color[i] as f32 / 255.0) * other_opacity)
+                        / (total_opacity + other_opacity);
                 }
-
-                let mixed_rgb_u8_new = mixbox::latent_to_rgb(&latent_mix);
-
-                mixed_rgb = [
-                    mixed_rgb_u8_new[0] as f32 / 255.0,
-                    mixed_rgb_u8_new[1] as f32 / 255.0,
-                    mixed_rgb_u8_new[2] as f32 / 255.0,
-                ];
+                total_opacity += other_opacity; // Accumulate opacity
             }
         }
     }
 
-    egui::Color32::from_rgb(
-        (mixed_rgb[0] * 255.0) as u8,
-        (mixed_rgb[1] * 255.0) as u8,
-        (mixed_rgb[2] * 255.0) as u8,
+    // Convert back to egui::Color32
+    egui::Color32::from_rgba_unmultiplied(
+        (blended_color[0] * 255.0) as u8,
+        (blended_color[1] * 255.0) as u8,
+        (blended_color[2] * 255.0) as u8,
+        (total_opacity * 255.0).min(255.0) as u8,
     )
 }
+
 
 fn segments_overlap(seg1: (egui::Pos2, egui::Pos2), seg2: (egui::Pos2, egui::Pos2)) -> bool {
     let distance =
