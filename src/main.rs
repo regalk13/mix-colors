@@ -3,6 +3,10 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use mixbox;
 use std::collections::VecDeque;
 
+mod pigment;
+
+use pigment::*;
+
 #[derive(Resource)]
 struct PaintCanvas {
     strokes: VecDeque<Stroke>,
@@ -22,7 +26,7 @@ impl Default for PaintCanvas {
             strokes: VecDeque::new(),
             current_stroke: Stroke {
                 points: Vec::new(),
-                color: egui::Color32::BLACK,
+                color: BLACK.color,
                 stroke_width: 10.0,
             },
         }
@@ -40,8 +44,42 @@ fn main() {
 
 fn paint_system(mut contexts: EguiContexts, mut canvas: ResMut<PaintCanvas>) {
     egui::SidePanel::new(egui::panel::Side::Left, "SidePanel").show(contexts.ctx_mut(), |ui| {
-        ui.horizontal(|ui| {
-            ui.color_edit_button_srgba(&mut canvas.current_stroke.color);
+        ui.vertical(|ui| {
+            // ui.color_edit_button_srgba(&mut canvas.current_stroke.color);
+
+            // Aviable Pigment Colors according to mixcolor
+
+            // Aviable Pigment Colors according to mixcolor
+            let colors = [
+                CADMIUM_YELLOW,
+                HANSA_YELLOW,
+                CADMIUM_ORANGE,
+                CADMIUM_RED,
+                QUINACRIDONE_MAGENTA,
+                COBALT_VIOLET,
+                ULTRAMARINE_BLUE,
+                COBALT_BLUE,
+                PHTHALO_BLUE,
+                PHTHALO_GREEN,
+                PERMANENT_GREEN,
+                SAP_GREEN,
+                BURNT_SIENNA,
+                BLACK
+            ];
+            for paint in colors {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(paint.name).color(egui::Color32::WHITE))
+                );
+                let button = ui.add(
+                    egui::Button::new("")
+                        .fill(paint.color)
+                        .min_size(egui::Vec2::new(300.0, 20.0)),
+                );
+                if button.clicked() {
+                    canvas.current_stroke.color = paint.color;
+                }
+            }
+
             ui.add(
                 egui::Slider::new(&mut canvas.current_stroke.stroke_width, 1.0..=20.0)
                     .text("Stroke width"),
@@ -77,7 +115,6 @@ fn paint_system(mut contexts: EguiContexts, mut canvas: ResMut<PaintCanvas>) {
                     canvas.current_stroke.points.clear();
                 }
             }
-
 
             for stroke in &canvas.strokes {
                 render_stroke(&painter, stroke, &canvas.strokes);
@@ -129,18 +166,17 @@ fn mix_color_for_segment(
                     (mixed_rgb[2] * 255.0) as u8,
                 ];
 
-                let other_rgb = [
-                    stroke.color.r(),
-                    stroke.color.g(),
-                    stroke.color.b(),
-                ];
+                let other_rgb = [stroke.color.r(), stroke.color.g(), stroke.color.b()];
 
                 let latent_base = mixbox::rgb_to_latent(&mixed_rgb_u8);
                 let latent_other = mixbox::rgb_to_latent(&other_rgb);
 
+                let overlap_weight = 0.2; // Adjust this value for desired softness (0 - 1)
+                let base_weight = 1.0 - overlap_weight;
+
                 let mut latent_mix = [0.0; mixbox::LATENT_SIZE];
                 for i in 0..mixbox::LATENT_SIZE {
-                    latent_mix[i] = 0.5 * latent_base[i] + 0.5 * latent_other[i];
+                    latent_mix[i] = base_weight * latent_base[i] + overlap_weight * latent_other[i];
                 }
 
                 let mixed_rgb_u8_new = mixbox::latent_to_rgb(&latent_mix);
@@ -161,9 +197,9 @@ fn mix_color_for_segment(
     )
 }
 
-
 fn segments_overlap(seg1: (egui::Pos2, egui::Pos2), seg2: (egui::Pos2, egui::Pos2)) -> bool {
-    let distance = |a: egui::Pos2, b: egui::Pos2| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+    let distance =
+        |a: egui::Pos2, b: egui::Pos2| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
 
     let threshold = 5.0;
     distance(seg1.0, seg2.0) < threshold
