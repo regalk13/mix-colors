@@ -1,33 +1,55 @@
 
 use nannou::prelude::*;
 use nannou_egui::{self, egui, Egui};
+use nannou::image;
 
+#[derive(Clone, Debug)]
+enum BrushType {
+    Basic,
+    Textured,
+    Light,
+}
 
-struct Model {
-    strokes: Vec<Stroke>, 
-    current_stroke: Stroke, 
-    egui: Egui,          
-    settings: Settings,    
-    ui_wants_input: bool,
+#[derive(Clone, Debug)]
+struct BrushPoint {
+    position: Point2,
+    pressure: f32,
+    stamp_rotation: f32,
 }
 
 #[derive(Clone, Debug)]
 struct Stroke {
-    points: Vec<Point2>,
+    points: Vec<BrushPoint>,
     color: Srgb<u8>,
     width: f32,
+    brush_type: BrushType,
+}
+
+struct Model {
+    strokes: Vec<Stroke>,
+    current_stroke: Stroke,
+    egui: Egui,
+    settings: Settings,
+    ui_wants_input: bool,
+    texture: wgpu::Texture,
 }
 
 struct Settings {
     stroke_width: f32,
     stroke_color: Srgb<u8>,
     clear_canvas: bool,
+    brush_type: BrushType,
+    brush_pressure: f32,
+    brush_spacing: f32,
 }
 
 pub struct PaintColor {
     pub name: &'static str,
     pub color: Srgb<u8>,
 }
+
+
+
 
 pub fn create_paint_colors() -> Vec<PaintColor> {
     vec![
@@ -105,7 +127,11 @@ fn model(app: &App) -> Model {
         .build()
         .unwrap();
     let window = app.window(window_id).unwrap();
-
+    let logo_path = app.assets_path().unwrap().join("images").join("RC_Brushes.png");
+    let image = image::open(logo_path).unwrap();
+    let texture = wgpu::Texture::from_image(&window, &image);
+    // let texture_view = texture.view().build();
+   
     let egui = Egui::from_window(&window);
 
     Model {
@@ -114,18 +140,23 @@ fn model(app: &App) -> Model {
             points: Vec::new(),
             color: srgb(0, 0, 0),
             width: 5.0,
+            brush_type: BrushType::Basic,
         },
         egui,
         settings: Settings {
             stroke_width: 5.0,
             stroke_color: srgb(0, 0, 0),
             clear_canvas: false,
+            brush_type: BrushType::Basic,
+            brush_pressure: 1.0,
+            brush_spacing: 0.1,
         },
-        ui_wants_input: false, 
+        ui_wants_input: false,
+        texture
     }
 }
 
-fn update(app: &App, model: &mut Model, update: Update) {
+fn update(_app: &App, model: &mut Model, update: Update) {
     let egui = &mut model.egui;
     let settings = &mut model.settings;
 
@@ -143,6 +174,27 @@ fn update(app: &App, model: &mut Model, update: Update) {
             settings.stroke_color.green as f32 / 255.0,
             settings.stroke_color.blue as f32 / 255.0,
         ];
+
+        ui.separator();
+        ui.label("Brush Settings:");
+
+        ui.horizontal(|ui| {
+            if ui.button("Basic").clicked() {
+                settings.brush_type = BrushType::Basic;
+            }
+            if ui.button("Textured").clicked() {
+                settings.brush_type = BrushType::Textured;
+            }
+            if ui.button("Light").clicked() {
+                settings.brush_type = BrushType::Light;
+            }
+        });
+
+        ui.label("Brush Pressure:");
+        ui.add(egui::Slider::new(&mut settings.brush_pressure, 0.1..=1.0));
+        
+        ui.label("Brush Spacing:");
+        ui.add(egui::Slider::new(&mut settings.brush_spacing, 0.05..=0.5));
         
         if ui.color_edit_button_rgb(&mut color).changed() {
             settings.stroke_color = srgb(
@@ -166,7 +218,6 @@ fn update(app: &App, model: &mut Model, update: Update) {
             }
         }
 
-
         if ui.button("Clear Canvas").clicked() {
             settings.clear_canvas = true;
         }
@@ -180,29 +231,62 @@ fn update(app: &App, model: &mut Model, update: Update) {
 
 fn view(app: &App, model: &Model, frame: Frame) {    
     let draw = app.draw();
-
     draw.background().color(WHITE);
 
     for stroke in &model.strokes {
-        if stroke.points.len() > 1 {
-            draw.polyline()
-                .weight(stroke.width) 
-                .color(stroke.color)  
-                .points(stroke.points.iter().cloned());
-        }
+        draw_stroke(&draw, stroke, &model.texture);
     }
 
-    if model.current_stroke.points.len() > 1 {
-        draw.polyline()
-            .weight(model.current_stroke.width)
-            .color(model.current_stroke.color)
-            .points(model.current_stroke.points.iter().cloned());
+    if !model.current_stroke.points.is_empty() {
+        draw_stroke(&draw, &model.current_stroke, &model.texture);
     }
 
     draw.to_frame(app, &frame).unwrap();
-
     model.egui.draw_to_frame(&frame).unwrap();
 }
+
+
+fn draw_stroke(draw: &Draw, stroke: &Stroke, texture: &wgpu::Texture) { 
+    match stroke.brush_type {
+        BrushType::Basic => {
+            if stroke.points.len() > 1 {
+                draw.polyline()
+                    .weight(stroke.width)
+                    .color(stroke.color)
+                    .points(stroke.points.iter().map(|p| p.position));
+            }
+        }
+        BrushType::Textured => {
+            for point in &stroke.points {
+                draw.texture(texture)
+                    .xy(point.position)
+                    .w_h(stroke.width, stroke.width)
+                    //.rgba(
+                    //    stroke.color.red as f32 / 255.0,
+                    //    stroke.color.green as f32 / 255.0,
+                    //    stroke.color.blue as f32 / 255.0,
+                    //   point.pressure,
+                    //)
+                    .rotate(0.0);
+            }
+        }
+        BrushType::Light => {
+            for point in &stroke.points {
+                draw.ellipse()
+                    .xy(point.position)
+                    .w_h(stroke.width, stroke.width)
+                    .color(rgba(
+                        stroke.color.red as f32 / 255.0,
+                        stroke.color.green as f32 / 255.0,
+                        stroke.color.blue as f32 / 255.0,
+                        point.pressure * 0.5, // Light brush has lower opacity
+                    ));
+                    // .blur(stroke.width * 0.5); // Add blur effect for light brush
+            }
+        }
+    }
+}
+
 
 fn mouse_pressed(_app: &App, model: &mut Model, _button: MouseButton) {
     if !model.ui_wants_input {
@@ -210,6 +294,7 @@ fn mouse_pressed(_app: &App, model: &mut Model, _button: MouseButton) {
             points: Vec::new(),
             color: model.settings.stroke_color,
             width: model.settings.stroke_width,
+            brush_type: model.settings.brush_type.clone(),
         };
     }
 }
@@ -223,9 +308,39 @@ fn mouse_released(_app: &App, model: &mut Model, _button: MouseButton) {
     }
 }
 
+
 fn mouse_moved(app: &App, model: &mut Model, pos: Point2) {
     if !model.ui_wants_input && app.mouse.buttons.left().is_down() {
-        model.current_stroke.points.push(pos);
+        let last_position = model.current_stroke.points
+            .last()
+            .map(|point| point.position);
+            
+        if let Some(last_pos) = last_position {
+            let distance = pos.distance(last_pos);
+            let spacing = model.settings.stroke_width * model.settings.brush_spacing;
+            
+            if distance >= spacing {
+                let num_points = (distance / spacing).ceil() as usize;
+                for i in 1..=num_points {
+                    let t = i as f32 / num_points as f32;
+                    let new_pos = last_pos.lerp(pos, t);
+                    let rotation = random_range(0.0, TAU); // Random rotation for texture variety
+                    let pressure = model.settings.brush_pressure * random_range(0.8, 1.0);
+                    
+                    model.current_stroke.points.push(BrushPoint {
+                        position: new_pos,
+                        pressure,
+                        stamp_rotation: rotation,
+                    });
+                }
+            }
+        } else {
+            model.current_stroke.points.push(BrushPoint {
+                position: pos,
+                pressure: model.settings.brush_pressure,
+                stamp_rotation: random_range(0.0, TAU),
+            });
+        }
     }
 }
 
