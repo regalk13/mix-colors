@@ -1,7 +1,6 @@
-
+use nannou::image;
 use nannou::prelude::*;
 use nannou_egui::{self, egui, Egui};
-use nannou::image;
 
 #[derive(Clone, Debug)]
 enum BrushType {
@@ -48,8 +47,27 @@ pub struct PaintColor {
     pub color: Srgb<u8>,
 }
 
+struct IntervalSpline {
+    control_points: Vec<BrushPoint>,
+    widths: Vec<f32>,
+    colors: Vec<Srgb<u8>>,
+}
 
+impl IntervalSpline {
+    fn new() -> Self {
+        Self {
+            control_points: Vec::new(),
+            widths: Vec::new(),
+            colors: Vec::new(),
+        }
+    }
 
+    fn add_control_point(&mut self, point: BrushPoint, width: f32, color: Srgb<u8>) {
+        self.control_points.push(point);
+        self.widths.push(width);
+        self.colors.push(color);
+    }
+}
 
 pub fn create_paint_colors() -> Vec<PaintColor> {
     vec![
@@ -127,11 +145,15 @@ fn model(app: &App) -> Model {
         .build()
         .unwrap();
     let window = app.window(window_id).unwrap();
-    let logo_path = app.assets_path().unwrap().join("images").join("RC_Brushes.png");
+    let logo_path = app
+        .assets_path()
+        .unwrap()
+        .join("images")
+        .join("RC_Brushes.png");
     let image = image::open(logo_path).unwrap();
     let texture = wgpu::Texture::from_image(&window, &image);
     // let texture_view = texture.view().build();
-   
+
     let egui = Egui::from_window(&window);
 
     Model {
@@ -152,8 +174,17 @@ fn model(app: &App) -> Model {
             brush_spacing: 0.1,
         },
         ui_wants_input: false,
-        texture
+        texture,
     }
+}
+
+fn generate_spline(stroke: &Stroke) -> IntervalSpline {
+    let mut spline = IntervalSpline::new();
+    for (i, point) in stroke.points.iter().enumerate() {
+        let width = stroke.width * random_range(0.8, 1.2);
+        spline.add_control_point(point.clone(), width, stroke.color);
+    }
+    spline
 }
 
 fn update(_app: &App, model: &mut Model, update: Update) {
@@ -192,10 +223,10 @@ fn update(_app: &App, model: &mut Model, update: Update) {
 
         ui.label("Brush Pressure:");
         ui.add(egui::Slider::new(&mut settings.brush_pressure, 0.1..=1.0));
-        
+
         ui.label("Brush Spacing:");
         ui.add(egui::Slider::new(&mut settings.brush_spacing, 0.05..=0.5));
-        
+
         if ui.color_edit_button_rgb(&mut color).changed() {
             settings.stroke_color = srgb(
                 (color[0] * 255.0) as u8,
@@ -206,13 +237,10 @@ fn update(_app: &App, model: &mut Model, update: Update) {
 
         let colors = create_paint_colors();
         for paint in colors {
-            ui.add(
-                egui::Label::new(egui::RichText::new(paint.name).color(egui::Color32::WHITE))
-            );
-            let button = ui.add(
-                egui::Button::new("")
-                    .min_size(egui::Vec2::new(300.0, 20.0)),
-            );
+            ui.add(egui::Label::new(
+                egui::RichText::new(paint.name).color(egui::Color32::WHITE),
+            ));
+            let button = ui.add(egui::Button::new("").min_size(egui::Vec2::new(300.0, 20.0)));
             if button.clicked() {
                 settings.stroke_color = paint.color;
             }
@@ -229,7 +257,7 @@ fn update(_app: &App, model: &mut Model, update: Update) {
     }
 }
 
-fn view(app: &App, model: &Model, frame: Frame) {    
+fn view(app: &App, model: &Model, frame: Frame) {
     let draw = app.draw();
     draw.background().color(WHITE);
 
@@ -245,8 +273,7 @@ fn view(app: &App, model: &Model, frame: Frame) {
     model.egui.draw_to_frame(&frame).unwrap();
 }
 
-
-fn draw_stroke(draw: &Draw, stroke: &Stroke, texture: &wgpu::Texture) { 
+fn draw_stroke(draw: &Draw, stroke: &Stroke, texture: &wgpu::Texture) {
     match stroke.brush_type {
         BrushType::Basic => {
             if stroke.points.len() > 1 {
@@ -271,22 +298,27 @@ fn draw_stroke(draw: &Draw, stroke: &Stroke, texture: &wgpu::Texture) {
             }
         }
         BrushType::Light => {
-            for point in &stroke.points {
-                draw.ellipse()
-                    .xy(point.position)
-                    .w_h(stroke.width, stroke.width)
-                    .color(rgba(
-                        stroke.color.red as f32 / 255.0,
-                        stroke.color.green as f32 / 255.0,
-                        stroke.color.blue as f32 / 255.0,
-                        point.pressure * 0.5, // Light brush has lower opacity
-                    ));
-                    // .blur(stroke.width * 0.5); // Add blur effect for light brush
+            if stroke.points.len() > 1 {
+                for pair in stroke.points.windows(2) {
+                    if let [start, end] = pair {
+                        let mid = start.position.lerp(end.position, 0.5);
+                        let width_start = stroke.width * start.pressure;
+                        let width_end = stroke.width * end.pressure;
+
+                        draw.quad()
+                            .points(
+                                start.position + vec2(0.0, width_start),
+                                start.position - vec2(0.0, width_start),
+                                end.position - vec2(0.0, width_end),
+                                end.position + vec2(0.0, width_end),
+                            )
+                            .color(stroke.color);
+                    }
+                }
             }
         }
     }
 }
-
 
 fn mouse_pressed(_app: &App, model: &mut Model, _button: MouseButton) {
     if !model.ui_wants_input {
@@ -308,31 +340,35 @@ fn mouse_released(_app: &App, model: &mut Model, _button: MouseButton) {
     }
 }
 
-
 fn mouse_moved(app: &App, model: &mut Model, pos: Point2) {
     if !model.ui_wants_input && app.mouse.buttons.left().is_down() {
-        let last_position = model.current_stroke.points
+        let last_position = model
+            .current_stroke
+            .points
             .last()
             .map(|point| point.position);
-            
+
         if let Some(last_pos) = last_position {
             let distance = pos.distance(last_pos);
             let spacing = model.settings.stroke_width * model.settings.brush_spacing;
-            
+
             if distance >= spacing {
                 let num_points = (distance / spacing).ceil() as usize;
                 for i in 1..=num_points {
                     let t = i as f32 / num_points as f32;
                     let new_pos = last_pos.lerp(pos, t);
-                    let rotation = random_range(0.0, TAU); // Random rotation for texture variety
+                    let rotation = random_range(0.0, TAU);
                     let pressure = model.settings.brush_pressure * random_range(0.8, 1.0);
-                    
+
                     model.current_stroke.points.push(BrushPoint {
                         position: new_pos,
                         pressure,
                         stamp_rotation: rotation,
                     });
                 }
+
+                let spline = generate_spline(&model.current_stroke);
+                model.current_stroke.points = spline.control_points;
             }
         } else {
             model.current_stroke.points.push(BrushPoint {
@@ -343,7 +379,6 @@ fn mouse_moved(app: &App, model: &mut Model, pos: Point2) {
         }
     }
 }
-
 fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event::WindowEvent) {
     model.egui.handle_raw_event(event);
 }
